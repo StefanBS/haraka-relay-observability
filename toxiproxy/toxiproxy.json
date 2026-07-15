@@ -1,0 +1,8 @@
+[
+  {
+    "name": "upstream_smtp",
+    "listen": "0.0.0.0:2526",
+    "upstream": "mailpit:1025",
+    "enabled": true
+  }
+]

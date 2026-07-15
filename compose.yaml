@@ -1,0 +1,16 @@
+services:
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    command: ["-host", "0.0.0.0", "-config", "/config/toxiproxy.json"]
+    ports:
+      - "${TOXIPROXY_API_PORT:-8474}:8474"
+      - "${TOXIPROXY_SMTP_PORT:-2526}:2526"
+    volumes:
+      - ./toxiproxy/toxiproxy.json:/config/toxiproxy.json:ro,Z
+    depends_on:
+      - mailpit
+
+  mailpit:
+    image: axllent/mailpit:v1.30.4
+    ports:
+      - "${MAILPIT_UI_PORT:-8025}:8025"
