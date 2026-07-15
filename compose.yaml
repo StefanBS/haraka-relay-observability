@@ -3,8 +3,8 @@ services:
     image: ghcr.io/shopify/toxiproxy:2.9.0
     command: ["-host", "0.0.0.0", "-config", "/config/toxiproxy.json"]
     ports:
-      - "${TOXIPROXY_API_PORT:-8474}:8474"
-      - "${TOXIPROXY_SMTP_PORT:-2526}:2526"
+      - "127.0.0.1:${TOXIPROXY_API_PORT:-8474}:8474"
+      - "127.0.0.1:${TOXIPROXY_SMTP_PORT:-2526}:2526"
     volumes:
       - ./toxiproxy/toxiproxy.json:/config/toxiproxy.json:ro,Z
     depends_on:
@@ -13,4 +13,23 @@ services:
   mailpit:
     image: axllent/mailpit:v1.30.4
     ports:
-      - "${MAILPIT_UI_PORT:-8025}:8025"
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
+
+  haraka:
+    build: ./haraka
+    ports:
+      - "127.0.0.1:${SMTP_PORT:-2525}:2525"
+      - "127.0.0.1:${METRICS_PORT:-9090}:9090"
+    environment:
+      UPSTREAM_HOST: ${UPSTREAM_HOST:-toxiproxy}
+      UPSTREAM_PORT: ${UPSTREAM_PORT:-2526}
+      QUEUE_MAX_DEPTH: ${QUEUE_MAX_DEPTH:-200}
+      RETRY_INTERVAL: ${RETRY_INTERVAL:-30s*20}
+    volumes:
+      - haraka-queue:/data/queue
+    depends_on:
+      - toxiproxy
+      - mailpit
+
+volumes:
+  haraka-queue:
