@@ -49,6 +49,19 @@ services:
     depends_on:
       - haraka
 
+  grafana:
+    image: grafana/grafana:11.1.0
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro,Z
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro,Z
+    depends_on:
+      - prometheus
+
 volumes:
   haraka-queue:
   prom-data:
