@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+rule_files:
+  - /prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: haraka
+    static_configs:
+      - targets: ["haraka:9090"]

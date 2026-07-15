@@ -31,5 +31,24 @@ services:
       - toxiproxy
       - mailpit
 
+  prometheus:
+    image: prom/prometheus:v2.53.1
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        sed 's/__QUEUE_AGE_THRESHOLD__/${QUEUE_AGE_THRESHOLD:-60}/'
+        /etc/prometheus/alerts.yml.tmpl > /prometheus/alerts.yml &&
+        exec /bin/prometheus
+        --config.file=/etc/prometheus/prometheus.yml
+        --storage.tsdb.path=/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9091}:9090"
+    volumes:
+      - ./prometheus:/etc/prometheus:ro,Z
+      - prom-data:/prometheus
+    depends_on:
+      - haraka
+
 volumes:
   haraka-queue:
+  prom-data:

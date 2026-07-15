@@ -1,0 +1,11 @@
+groups:
+  - name: relay
+    rules:
+      - alert: MailDeliveryStalled
+        expr: relay_queue_oldest_age_seconds > __QUEUE_AGE_THRESHOLD__
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "Oldest queued message is {{ $value }}s old; mail is not reaching the upstream"
+          description: "Accepted mail is sitting in the relay's disk queue past the freshness SLO. Check upstream reachability first."
