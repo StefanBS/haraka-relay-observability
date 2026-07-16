@@ -23,24 +23,25 @@ services:
     environment:
       UPSTREAM_HOST: ${UPSTREAM_HOST:-toxiproxy}
       UPSTREAM_PORT: ${UPSTREAM_PORT:-2526}
+      SENDER_MX_HOST: ${SENDER_MX_HOST:-mailpit}
+      SENDER_MX_PORT: ${SENDER_MX_PORT:-1025}
       QUEUE_MAX_DEPTH: ${QUEUE_MAX_DEPTH:-200}
       RETRY_INTERVAL: ${RETRY_INTERVAL:-30s*20}
+      DEAD_LETTER_DIR: ${DEAD_LETTER_DIR:-/data/dead-letter}
     volumes:
       - haraka-queue:/data/queue
+      # Separate volume on purpose: dead-lettered mail must outlive anything
+      # that clears the working queue.
+      - haraka-dead-letter:/data/dead-letter
     depends_on:
       - toxiproxy
       - mailpit
 
   prometheus:
     image: prom/prometheus:v2.53.1
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - >
-        sed 's/__QUEUE_AGE_THRESHOLD__/${QUEUE_AGE_THRESHOLD:-60}/'
-        /etc/prometheus/alerts.yml.tmpl > /prometheus/alerts.yml &&
-        exec /bin/prometheus
-        --config.file=/etc/prometheus/prometheus.yml
-        --storage.tsdb.path=/prometheus
+    entrypoint: ["/bin/sh", "/etc/prometheus/docker-entrypoint.sh"]
+    environment:
+      QUEUE_AGE_THRESHOLD: ${QUEUE_AGE_THRESHOLD:-60}
     ports:
       - "127.0.0.1:${PROMETHEUS_PORT:-9091}:9090"
     volumes:
@@ -64,4 +65,5 @@ services:
 
 volumes:
   haraka-queue:
+  haraka-dead-letter:
   prom-data:

@@ -45,7 +45,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "count(ALERTS{alertname=\"MailDeliveryStalled\",alertstate=\"firing\"}) or vector(0)",
+          "expr": "count(ALERTS{alertstate=\"firing\"}) or vector(0)",
           "legendFormat": "alerts firing",
           "instant": true
         },
@@ -72,13 +72,15 @@
     {
       "id": 3,
       "type": "timeseries",
-      "title": "Failures: deferrals by reason, bounces",
+      "title": "Failures: deferrals by reason, dead letters, notifications",
       "gridPos": { "h": 7, "w": 12, "x": 0, "y": 7 },
       "datasource": { "type": "prometheus", "uid": "prom" },
       "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
       "targets": [
         { "refId": "A", "expr": "sum by (reason) (rate(relay_deferred_total[1m]))", "legendFormat": "deferred: {{reason}}" },
-        { "refId": "B", "expr": "rate(relay_bounced_total[1m])", "legendFormat": "bounced (mail loss)" }
+        { "refId": "B", "expr": "rate(relay_bounced_total[1m])", "legendFormat": "dead-lettered (retries exhausted)" },
+        { "refId": "C", "expr": "rate(relay_ndr_sent_total[1m])", "legendFormat": "senders notified" },
+        { "refId": "D", "expr": "rate(relay_ndr_failures_total[1m])", "legendFormat": "notification failed (sender uninformed)" }
       ]
     },
     {
@@ -96,7 +98,7 @@
     {
       "id": 5,
       "type": "timeseries",
-      "title": "Queue: depth and oldest message age",
+      "title": "Queue: depth, oldest age, dead-lettered",
       "gridPos": { "h": 7, "w": 12, "x": 0, "y": 14 },
       "datasource": { "type": "prometheus", "uid": "prom" },
       "fieldConfig": {
@@ -113,7 +115,8 @@
       },
       "targets": [
         { "refId": "A", "expr": "relay_queue_depth", "legendFormat": "depth" },
-        { "refId": "B", "expr": "relay_queue_oldest_age_seconds", "legendFormat": "oldest age (s)" }
+        { "refId": "B", "expr": "relay_queue_oldest_age_seconds", "legendFormat": "oldest age (s)" },
+        { "refId": "C", "expr": "relay_dead_letter_depth", "legendFormat": "dead-letter depth (needs a human)" }
       ]
     },
     {

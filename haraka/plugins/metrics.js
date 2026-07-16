@@ -1,68 +1,30 @@
 'use strict'
 // The four 3am signals, one plugin:
 //   flow balance   relay_received_total / relay_delivered_total
-//   failures & why relay_deferred_total{reason} / relay_bounced_total
+//   failures & why relay_deferred_total{reason}
 //   latency        relay_delivery_duration_seconds (accept -> upstream handoff)
 //   queue state    relay_queue_depth / relay_queue_oldest_age_seconds
+//                  relay_dead_letter_depth
 // Served on Haraka's built-in HTTP server (config/http.ini).
+//
+// Permanent-failure counters (relay_bounced_total, relay_dead_letter_failures_total)
+// live in route_upstream.js instead: that hook has to take custody of the message
+// before core unlinks it, and the counter belongs with the decision it records.
 
-const fs = require('node:fs')
-const path = require('node:path')
+const { client, make } = require('./lib/prom')
+const {
+  resolveQueueDir,
+  resolveDeadLetterDir,
+  scanForMetrics,
+  countDeadLetters,
+} = require('./lib/queue')
+const { isBounceMessage } = require('./lib/mail')
 
-const client = require('prom-client')
+// Bounded cardinality: these six reasons, never raw error strings.
+const DEFER_REASONS = ['unreachable', 'refused', 'timeout', '4xx', '5xx', 'other']
 
-// Survives Haraka's plugin hot-reload without double-registering.
-function make(kind, opts) {
-  return client.register.getSingleMetric(opts.name) || new client[kind](opts)
-}
-
-// One directory scan feeds both gauges; TTL keeps scrape cost trivial.
-const QUEUE_SCAN_TTL_MS = 2000
-let last_scan = { at: 0, depth: 0, oldest_age: 0 }
 let plugin = null // set in register(); lets module-scope code log via Haraka
 
-function scan_queue(dir) {
-  const now = Date.now()
-  if (now - last_scan.at < QUEUE_SCAN_TTL_MS) return last_scan
-  let depth = 0
-  let oldest = null
-  let files = []
-  try {
-    files = fs.readdirSync(dir)
-  } catch (err) {
-    if (err.code !== 'ENOENT') {
-      // Never throw: one EACCES must not 500 /metrics mid-incident.
-      // Log loudly and keep serving the previous (stale) reading.
-      if (plugin) plugin.logerror(`cannot read queue dir ${dir}: ${err.message}`)
-      else console.error(`[metrics] cannot read queue dir ${dir}: ${err.message}`)
-      return last_scan
-    }
-    // ENOENT == no queue dir yet == empty
-  }
-  for (const f of files) {
-    // __tmp__.  = in-flight write; error.  = retired permanently-failed copy;
-    // neither is deliverable backlog
-    if (f.startsWith('__tmp__') || f.startsWith('error.')) continue
-    // qfile name: $arrival_$nextattempt_$attempts_$pid_$uniq_$counter_$host
-    // where $arrival is epoch-ms (13 digits). Anything not matching the real
-    // qfile shape is skipped entirely: not counted, not considered for oldest.
-    const m = f.match(/^(\d{13})_\d+_\d+_/)
-    if (!m) continue
-    depth++
-    const arrival = parseInt(m[1], 10)
-    if (oldest === null || arrival < oldest) {
-      oldest = arrival
-    }
-  }
-  last_scan = {
-    at: now,
-    depth,
-    oldest_age: oldest === null ? 0 : (now - oldest) / 1000,
-  }
-  return last_scan
-}
-
-// Bounded cardinality: six reasons, never raw error strings.
 function bucket_reason(err) {
   const s = String((err && err.message) || err || '').toLowerCase()
   // When every MX fails to connect, Haraka swallows the socket error and the
@@ -80,8 +42,7 @@ function bucket_reason(err) {
 
 exports.register = function () {
   plugin = this
-  const queue_dir =
-    this.config.get('queue_dir') || path.join(process.env.HARAKA || '.', 'queue')
+  const queue_dir = resolveQueueDir(this)
 
   // Same hot-reload guard as make(): default metrics register themselves.
   if (!client.register.getSingleMetric('process_cpu_user_seconds_total')) {
@@ -103,30 +64,49 @@ exports.register = function () {
   })
   // Zero-initialize every reason so the series exist from boot;
   // otherwise rate() misses the birth increment.
-  for (const r of ['unreachable', 'refused', 'timeout', '4xx', '5xx', 'other']) {
+  for (const r of DEFER_REASONS) {
     this.deferred.labels(r).inc(0)
   }
-  this.bounced = make('Counter', {
-    name: 'relay_bounced_total',
-    help: 'Messages permanently failed; mail loss, must stay 0',
+  this.ndr_sent = make('Counter', {
+    name: 'relay_ndr_sent_total',
+    help: 'Bounce notifications delivered to senders; proof the sender was told',
   })
   this.duration = make('Histogram', {
     name: 'relay_delivery_duration_seconds',
     help: 'Accept-to-upstream-handoff latency, including queue wait',
     buckets: [0.1, 0.5, 1, 5, 15, 30, 60, 120, 300],
   })
+  const onQueueReadError = (err) => {
+    // Never throw: one EACCES must not 500 /metrics mid-incident.
+    if (plugin) plugin.logerror(`cannot read queue dir ${queue_dir}: ${err.message}`)
+    else console.error(`[metrics] cannot read queue dir ${queue_dir}: ${err.message}`)
+  }
   make('Gauge', {
     name: 'relay_queue_depth',
     help: 'Messages sitting in the outbound queue',
     collect() {
-      this.set(scan_queue(queue_dir).depth)
+      this.set(scanForMetrics(queue_dir, onQueueReadError).depth)
     },
   })
   make('Gauge', {
     name: 'relay_queue_oldest_age_seconds',
     help: 'Age of the oldest message in the outbound queue',
     collect() {
-      this.set(scan_queue(queue_dir).oldest_age)
+      this.set(scanForMetrics(queue_dir, onQueueReadError).oldest_age)
+    },
+  })
+  const dead_letter_dir = resolveDeadLetterDir()
+  const onDeadLetterReadError = (err) => {
+    if (plugin) plugin.logerror(`cannot read dead-letter dir: ${err.message}`)
+  }
+  // A gauge, not a counter: these messages sit until a human drains them, so
+  // the useful question is "how much mail is stranded right now", and it only
+  // returns to zero when someone actually deals with it.
+  make('Gauge', {
+    name: 'relay_dead_letter_depth',
+    help: 'Messages preserved after exhausting retries, awaiting manual replay',
+    collect() {
+      this.set(countDeadLetters(dead_letter_dir, onDeadLetterReadError))
     },
   })
 }
@@ -139,7 +119,17 @@ exports.hook_queue_ok = function (next) {
   next()
 }
 
+// Bounce notifications travel through the same outbound queue as customer mail,
+// so every hook below sees them too. They are the relay's own traffic, not
+// accepted customer messages, and counting them here would inflate the flow
+// balance (delivered would exceed received, since an NDR never hits
+// hook_queue_ok) and pollute the SLI histogram with latency no customer waits
+// on. They get their own counters instead.
 exports.hook_delivered = function (next, hmail) {
+  if (isBounceMessage(hmail)) {
+    this.ndr_sent.inc()
+    return next()
+  }
   this.delivered.inc()
   if (hmail && hmail.todo && hmail.todo.queue_time) {
     this.duration.observe((Date.now() - hmail.todo.queue_time) / 1000)
@@ -148,14 +138,12 @@ exports.hook_delivered = function (next, hmail) {
 }
 
 exports.hook_deferred = function (next, hmail, params) {
-  this.deferred.labels(bucket_reason(params && params.err)).inc()
+  // A deferring NDR is reported by relay_ndr_failures_total if it ultimately
+  // fails; keeping it out of the reason buckets keeps those about customer mail.
+  if (!isBounceMessage(hmail)) {
+    this.deferred.labels(bucket_reason(params && params.err)).inc()
+  }
   next() // CONT; anything else deletes the queued message
-}
-
-exports.hook_bounce = function (next, hmail, err) {
-  this.bounced.inc()
-  this.logcrit(`message permanently failed: ${err}`)
-  next(OK) // suppress sending a bounce message; no real senders exist locally
 }
 
 exports.hook_init_http = function (next, Server) {

@@ -9,3 +9,36 @@ groups:
         annotations:
           summary: "Oldest queued message is {{ $value }}s old; mail is not reaching the upstream"
           description: "Accepted mail is sitting in the relay's disk queue past the freshness SLO. Check upstream reachability first."
+
+      # No threshold to tune and no `for:`; one dead-lettered message is
+      # already a durability-invariant breach, and the gauge only falls when a
+      # human drains the directory. Deliberately not budget-based: this is a
+      # discrete event, not a ratio (see README, "SLIs and SLO").
+      - alert: MailDeadLettered
+        expr: relay_dead_letter_depth > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $value }} message(s) exhausted retries and are stranded in the dead-letter queue"
+          description: "Mail was accepted, could not be delivered within the retry budget, and is preserved in DEAD_LETTER_DIR. It will not move on its own; inspect and replay it."
+
+      # Warning, not page: the mail itself is safe (dead-lettered, and
+      # MailDeadLettered is already paging for the same incident). What this adds
+      # is that the sender still believes delivery succeeded; it changes the
+      # comms during the incident, not whether someone gets woken up.
+      - alert: SenderNotNotified
+        expr: increase(relay_ndr_failures_total[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bounce notification undeliverable; sender was not told their mail failed"
+          description: "A message was dead-lettered but its NDR could not be delivered to the sender, who still believes the mail was accepted. Check SENDER_MX_HOST reachability; the original is preserved in DEAD_LETTER_DIR."
+
+      # The one path where mail is genuinely lost: custody itself failed.
+      - alert: MailLost
+        expr: increase(relay_dead_letter_failures_total[5m]) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "Dead-letter write failed; accepted mail has been lost"
+          description: "The relay could not preserve a permanently-failed message before core unlinked it. Check disk space and permissions on DEAD_LETTER_DIR."
